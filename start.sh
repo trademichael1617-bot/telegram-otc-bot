@@ -1,1 +1,0 @@
-python otc_multi_pair_graded_bot.py
