@@ -1,3 +1,19 @@
+# ================= KEEP ALIVE =================
+from flask import Flask
+import threading
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "OTC Bot is alive!"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=10000)
+
+threading.Thread(target=run_flask).start()
+# ==============================================
+
 import asyncio
 import yfinance as yf
 from datetime import datetime, time
@@ -63,19 +79,16 @@ def daily_reset():
 def grade_signal(rsi, band_width, price, upper, lower):
     score = 0
 
-    # RSI strength
     if rsi <= 8 or rsi >= 92:
         score += 2
     elif rsi <= 10 or rsi >= 90:
         score += 1
 
-    # Bollinger touch
     if price <= lower or price >= upper:
         score += 2
     elif abs(price - lower) < abs(upper - price):
         score += 1
 
-    # Band tightness
     if band_width < BB_TIGHT:
         score += 2
     elif band_width < BB_NORMAL:
@@ -104,11 +117,7 @@ def analyze_pair(symbol):
 
     band_width = (upper - lower) / price
 
-    consolidating = (
-        band_width < BB_NORMAL
-        and lower < price < upper
-        and 40 < rsi < 60
-    )
+    consolidating = band_width < BB_NORMAL and lower < price < upper
 
     if not consolidating:
         return None
@@ -127,7 +136,6 @@ def analyze_pair(symbol):
 
 async def check_market(context: ContextTypes.DEFAULT_TYPE):
     global pending
-
     daily_reset()
 
     if not in_session() or pending:
@@ -140,7 +148,6 @@ async def check_market(context: ContextTypes.DEFAULT_TYPE):
         result = analyze_pair(symbol)
         if result:
             signal, grade = result
-
             if grade == "C":
                 return
 
@@ -148,8 +155,7 @@ async def check_market(context: ContextTypes.DEFAULT_TYPE):
 
             await context.bot.send_message(
                 chat_id=CHANNEL_ID,
-                text=f"""
-⚠️ SETUP DETECTED ({grade})
+                text=f"""⚠️ SETUP DETECTED ({grade})
 
 PAIR: {name}
 SIGNAL: {signal}
@@ -162,7 +168,6 @@ Reply NO to ignore
 
 async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global pending, signals_sent, wins, losses
-
     text = update.message.text.upper()
 
     if text == "YES" and pending:
@@ -170,8 +175,7 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         signals_sent += 1
         await context.bot.send_message(
             chat_id=CHANNEL_ID,
-            text=f"""
-✅ CONFIRMED SIGNAL ({grade})
+            text=f"""✅ CONFIRMED SIGNAL ({grade})
 
 PAIR: {pair}
 TYPE: {signal}
@@ -191,17 +195,15 @@ EXPIRY: 1 candle
         losses += 1
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 OTC Bot with Signal Grading Running")
+    await update.message.reply_text("🤖 OTC Bot Running")
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply))
-    app.job_queue.run_repeating(check_market, interval=60, first=10)
+    app_tg = ApplicationBuilder().token(TOKEN).build()
+    app_tg.add_handler(CommandHandler("start", start))
+    app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply))
+    app_tg.job_queue.run_repeating(check_market, interval=60, first=10)
     print("Graded OTC bot running...")
-    app.run_polling()
+    app_tg.run_polling()
 
 if __name__ == "__main__":
     main()
-
-
