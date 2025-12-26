@@ -2,19 +2,15 @@ import os
 import threading
 import logging
 from flask import Flask
-
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ======================
-# BASIC CONFIG
+# CONFIG
 # ======================
 TOKEN = os.getenv("BOT_TOKEN", "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003540658518")
+  # replace with your channel ID
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -22,7 +18,7 @@ logging.basicConfig(
 )
 
 # ======================
-# FLASK APP (KEEP RENDER ALIVE)
+# FLASK APP
 # ======================
 app = Flask(__name__)
 
@@ -30,13 +26,15 @@ app = Flask(__name__)
 def home():
     return "Telegram OTC Bot is running ✅"
 
+@app.route("/health")
+def health():
+    return "OK", 200
+
 # ======================
-# TELEGRAM COMMANDS
+# TELEGRAM HANDLERS
 # ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "✅ OTC Graded Bot is ACTIVE\nUse /signal to test."
-    )
+    await update.message.reply_text("✅ OTC Graded Bot is ACTIVE\nUse /signal to test.")
 
 async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = (
@@ -55,11 +53,12 @@ async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Signal sent to channel")
 
 # ======================
-# START TELEGRAM BOT
+# TELEGRAM BOT THREAD
 # ======================
 def start_telegram_bot():
     app_tg = ApplicationBuilder().token(TOKEN).build()
 
+    # add command handlers
     app_tg.add_handler(CommandHandler("start", start))
     app_tg.add_handler(CommandHandler("signal", signal))
 
@@ -67,13 +66,13 @@ def start_telegram_bot():
     app_tg.run_polling()
 
 # ======================
-# MAIN ENTRY
+# MAIN
 # ======================
 if __name__ == "__main__":
-    # Start Telegram bot in background thread
+    # Start Telegram bot in a background thread
     threading.Thread(target=start_telegram_bot).start()
 
-    # Start Flask server
+    # Start Flask server (Render PORT)
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
