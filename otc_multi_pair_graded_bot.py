@@ -1,25 +1,13 @@
 import os
-import threading
-import logging
+import asyncio
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ======================
-# CONFIG
-# ======================
 TOKEN = os.getenv("BOT_TOKEN", "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003540658518")
   # replace with your channel ID
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-
-# ======================
-# FLASK APP
-# ======================
 app = Flask(__name__)
 
 @app.route("/")
@@ -44,51 +32,29 @@ async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Grade: A+\n"
         "Confidence: HIGH\n"
     )
-
-    await context.bot.send_message(
-        chat_id=CHANNEL_ID,
-        text=message
-    )
-
+    await context.bot.send_message(chat_id=CHANNEL_ID, text=message)
     await update.message.reply_text("✅ Signal sent to channel")
 
 # ======================
-# TELEGRAM BOT THREAD
+# START TELEGRAM BOT
 # ======================
-# def start_telegram_bot():
-#     app_tg = ApplicationBuilder().token(TOKEN).build()
-
-#     # add command handlers
-#     app_tg.add_handler(CommandHandler("start", start))
-#     app_tg.add_handler(CommandHandler("signal", signal))
-
-#     logging.info("🤖 Telegram bot started")
-#     app_tg.run_polling()
-
-def start_telegram_bot():
-    print("Starting Telegram bot thread...")  # <-- debug print
+async def start_bot():
+    print("Starting Telegram bot...")
     app_tg = ApplicationBuilder().token(TOKEN).build()
-
-    # Add command handlers
     app_tg.add_handler(CommandHandler("start", start))
     app_tg.add_handler(CommandHandler("signal", signal))
-
-    print("Telegram bot initialized. Polling now...")  # <-- debug print
-    app_tg.run_polling()
-    print("🤖 Telegram bot started")  # <-- debug print after polling starts
+    print("Telegram bot initialized. Polling now...")
+    await app_tg.run_polling()
+    print("🤖 Telegram bot started")
 
 # ======================
-# MAIN
+# RUN BOT + FLASK
 # ======================
 if __name__ == "__main__":
-    # Start Telegram bot in a background thread
-    threading.Thread(target=start_telegram_bot).start()
+    # Run bot in asyncio loop
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_bot())
 
-    # Start Flask server (Render PORT)
+    # Run Flask server
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-
-
-
-
