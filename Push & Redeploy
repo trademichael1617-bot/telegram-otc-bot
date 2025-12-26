@@ -1,0 +1,3 @@
+git add .
+git commit -m "Fix Telegram bot for v20 and Render"
+git push
