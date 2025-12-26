@@ -55,15 +55,27 @@ async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================
 # TELEGRAM BOT THREAD
 # ======================
+# def start_telegram_bot():
+#     app_tg = ApplicationBuilder().token(TOKEN).build()
+
+#     # add command handlers
+#     app_tg.add_handler(CommandHandler("start", start))
+#     app_tg.add_handler(CommandHandler("signal", signal))
+
+#     logging.info("🤖 Telegram bot started")
+#     app_tg.run_polling()
+
 def start_telegram_bot():
+    print("Starting Telegram bot thread...")  # <-- debug print
     app_tg = ApplicationBuilder().token(TOKEN).build()
 
-    # add command handlers
+    # Add command handlers
     app_tg.add_handler(CommandHandler("start", start))
     app_tg.add_handler(CommandHandler("signal", signal))
 
-    logging.info("🤖 Telegram bot started")
+    print("Telegram bot initialized. Polling now...")  # <-- debug print
     app_tg.run_polling()
+    print("🤖 Telegram bot started")  # <-- debug print after polling starts
 
 # ======================
 # MAIN
