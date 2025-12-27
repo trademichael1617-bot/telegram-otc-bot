@@ -7,7 +7,7 @@ from telegram.ext import ApplicationBuilder
 # ======================
 # CONFIG
 # ======================
-
+# Hardcoded token for now as per your snippet
 TOKEN = "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ"
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1003540658518"))
 
@@ -25,58 +25,63 @@ def health():
     return "OK", 200
 
 # ======================
-# TELEGRAM LOOP
+# TELEGRAM SIGNAL LOOP
 # ======================
 async def send_signals(application):
-    await asyncio.sleep(5)
+    """Background task to send signals every 60 seconds."""
+    await asyncio.sleep(5)  # Let the bot initialize first
     while True:
-        await application.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text="📊 OTC SIGNAL\nPair: EURUSD OTC\nDirection: BUY 📈"
-        )
-        print("✅ Signal sent")
+        try:
+            # Using Markdown for a cleaner look
+            message = (
+                "📊 *NEW OTC SIGNAL*\n\n"
+                "*Pair:* EURUSD OTC\n"
+                "*Direction:* BUY 📈\n"
+                "*Grade:* A+\n"
+                "*Confidence:* HIGH"
+            )
+            await application.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=message,
+                parse_mode="Markdown"
+            )
+            print("✅ Signal sent successfully")
+        except Exception as e:
+            print(f"❌ Error sending signal: {e}")
+        
         await asyncio.sleep(60)
 
 async def start_bot():
+    """Builds and runs the Telegram bot."""
     application = ApplicationBuilder().token(TOKEN).build()
+    
+    # Schedule the signal task inside the Telegram loop
     application.create_task(send_signals(application))
-    await application.run_polling()
+    
+    # Initialize and start polling
+    await application.initialize()
+    await application.start_polling()
+    
+    # Keep the async loop alive
+    while True:
+        await asyncio.sleep(1)
 
-def run_bot():
-    asyncio.run(start_bot())
+def run_bot_in_thread():
+    """Runs the asyncio event loop in a background thread."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_bot())
 
 # ======================
-# MAIN ENTRY (NO INDENT ERRORS)
+# MAIN ENTRY
 # ======================
 if __name__ == "__main__":
-    print("🚀 Starting Flask + Telegram bot")
+    print("🚀 Launching Flask server and Telegram bot thread...")
 
-    threading.Thread(target=run_bot, daemon=True).start()
+    # Start the bot in a background thread so Flask can run on the main thread
+    bot_thread = threading.Thread(target=run_bot_in_thread, daemon=True)
+    bot_thread.start()
 
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-
-import os
-import asyncio
-from telegram.ext import ApplicationBuilder
-
-CHANNEL_ID = -1003540658518
-async def test_message():
-    app_tg = ApplicationBuilder().token(TOKEN).build()
-    await app_tg.initialize()
-    await app_tg.start()
-    
-    await app_tg.bot.send_message(
-        chat_id=CHANNEL_ID,
-        text="✅ Test message from bot is working!"
-    )
-    
-    await app_tg.stop()  # Stop bot after sending
-
-asyncio.run(test_message())
-
-
-
+    # Get the port from Render's environment, default to 10000
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
