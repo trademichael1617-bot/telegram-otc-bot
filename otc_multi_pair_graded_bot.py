@@ -1,5 +1,3 @@
-Fix asyncio loop for Python 3.13 + Render
-
 import os
 import asyncio
 from flask import Flask
