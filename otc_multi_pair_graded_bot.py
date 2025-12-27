@@ -2,8 +2,8 @@ import os
 import asyncio
 import threading
 from flask import Flask
-from telegram.ext import ApplicationBuilder, ContextTypes
-from telegram import Update
+from telegram import Bot
+from telegram.ext import ApplicationBuilder
 
 # ======================
 # CONFIG
@@ -30,24 +30,14 @@ def health():
 async def send_signals(app_tg: ApplicationBuilder):
     while True:
         try:
-            message = (
-                "📊 OTC SIGNAL\n\n"
-                "Pair: EURUSD OTC\n"
-                "Direction: BUY 📈\n"
-                "Grade: A+\n"
-                "Confidence: HIGH\n"
+            await app_tg.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text="📊 OTC SIGNAL\n\nPair: EURUSD OTC\nDirection: BUY 📈\nGrade: A+\nConfidence: HIGH"
             )
-            await app_tg.bot.send_message(chat_id=CHANNEL_ID, text=message)
             print("✅ Signal sent to Telegram")
         except Exception as e:
             print("❌ Telegram error:", e)
         await asyncio.sleep(60)  # send every 60 seconds
-
-# ======================
-# OPTIONAL /start COMMAND
-# ======================
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bot is active ✅")
 
 # ======================
 # TELEGRAM BOT STARTER
@@ -55,20 +45,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_telegram_bot():
     print("🤖 Starting Telegram bot...")
     app_tg = ApplicationBuilder().token(TOKEN).build()
-
-    # Add optional /start command
-    app_tg.add_handler(
-        app_tg.handler_factory("start", start_command)
-    )
-
-    # Start background signal loop
     asyncio.create_task(send_signals(app_tg))
-
-    # Run the bot
-    await app_tg.run_polling()
+    await app_tg.start()
+    await app_tg.updater.start_polling()
+    await app_tg.updater.idle()
 
 # ======================
-# RUN BOT IN THREAD (RENDER FIX)
+# RUN BOT IN THREAD (ASYNC SAFE)
 # ======================
 def run_bot():
     asyncio.run(start_telegram_bot())
