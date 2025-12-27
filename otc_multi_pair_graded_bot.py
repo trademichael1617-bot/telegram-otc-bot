@@ -7,11 +7,18 @@ from telegram.ext import ApplicationBuilder
 # ======================
 # CONFIG
 # ======================
-TOKEN = os.environ.get("BOT_TOKEN", "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ")
-CHANNEL_ID = os.environ.get("CHANNEL_ID", "-1003540658518")
+TOKEN = os.getenv(
+    "BOT_TOKEN",
+    "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ"
+)
+
+CHANNEL_ID = os.getenv(
+    "CHANNEL_ID",
+    "-1003540658518"
+)
 
 # ======================
-# FLASK APP
+# FLASK APP (RENDER KEEP-ALIVE)
 # ======================
 app = Flask(__name__)
 
@@ -26,37 +33,61 @@ def health():
 # ======================
 # TELEGRAM SIGNAL LOOP
 # ======================
-async def send_signals(app_tg):
+async def send_signals(tg_app):
     while True:
-        await app_tg.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text="✅ TEST MESSAGE FROM BOT"
-        )
-        print("Signal sent")
-        await asyncio.sleep(60)
+        try:
+            message = (
+                "📊 OTC SIGNAL\n\n"
+                "Pair: EURUSD OTC\n"
+                "Direction: BUY 📈\n"
+                "Grade: A+\n"
+                "Confidence: HIGH\n"
+            )
+
+            await tg_app.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=message
+            )
+
+            print("✅ Signal sent to Telegram")
+
+        except Exception as e:
+            print("❌ Telegram error:", e)
+
+        await asyncio.sleep(60)  # send every 60 seconds
 
 # ======================
 # TELEGRAM BOT STARTER
 # ======================
-async def start_bot():
+async def start_telegram_bot():
     print("🤖 Starting Telegram bot...")
-    app_tg = ApplicationBuilder().token(TOKEN).build()
-    asyncio.create_task(send_signals(app_tg))
-    await app_tg.run_polling()
+
+    tg_app = ApplicationBuilder().token(TOKEN).build()
+
+    # start background signal task
+    asyncio.create_task(send_signals(tg_app))
+
+    await tg_app.run_polling()
 
 # ======================
-# RUN BOT IN THREAD
+# RUN BOT IN SEPARATE THREAD (RENDER FIX)
 # ======================
 def run_bot():
-    asyncio.run(start_bot())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_telegram_bot())
 
 # ======================
-# MAIN
+# MAIN ENTRY
 # ======================
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-start()
+    print("🚀 Launching Flask + Telegram bot")
+
+    bot_thread = threading.Thread(
+        target=run_bot,
+        daemon=True
+    )
+    bot_thread.start()
+
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
