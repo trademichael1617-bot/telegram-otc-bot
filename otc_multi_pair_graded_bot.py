@@ -7,81 +7,83 @@ from telegram.ext import ApplicationBuilder
 # ======================
 # CONFIG
 # ======================
-# Hardcoded token for now as per your snippet
 TOKEN = "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ"
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1003540658518"))
 
-# ======================
-# FLASK APP (RENDER NEEDS THIS)
-# ======================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Telegram OTC Bot is running ✅"
+    return "Bot is active ✅"
 
 @app.route("/health")
 def health():
     return "OK", 200
 
 # ======================
-# TELEGRAM SIGNAL LOOP
+# TELEGRAM LOGIC
 # ======================
 async def send_signals(application):
-    """Background task to send signals every 60 seconds."""
-    await asyncio.sleep(5)  # Let the bot initialize first
+    """Background loop to send signals."""
+    # Wait for the bot to be fully connected before starting
+    await asyncio.sleep(10)
+    print("📢 Signal loop started...")
+    
     while True:
         try:
-            # Using Markdown for a cleaner look
-            message = (
-                "📊 *NEW OTC SIGNAL*\n\n"
-                "*Pair:* EURUSD OTC\n"
-                "*Direction:* BUY 📈\n"
-                "*Grade:* A+\n"
-                "*Confidence:* HIGH"
-            )
+            msg = "📊 *OTC SIGNAL*\n\n*Pair:* EURUSD OTC\n*Direction:* BUY 📈"
             await application.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=message,
+                chat_id=CHANNEL_ID, 
+                text=msg, 
                 parse_mode="Markdown"
             )
             print("✅ Signal sent successfully")
         except Exception as e:
-            print(f"❌ Error sending signal: {e}")
+            print(f"❌ Telegram error: {e}")
         
         await asyncio.sleep(60)
 
 async def start_bot():
-    """Builds and runs the Telegram bot."""
+    """Initializes and runs the bot."""
+    # Build the application
     application = ApplicationBuilder().token(TOKEN).build()
     
-    # Schedule the signal task inside the Telegram loop
-    application.create_task(send_signals(application))
-    
-    # Initialize and start polling
+    # Initialize the bot properly
     await application.initialize()
-    await application.start_polling()
+    await application.start()
     
-    # Keep the async loop alive
+    # Start the signal task explicitly
+    asyncio.create_task(send_signals(application))
+    
+    # Start polling updates (replaces the broken start_polling)
+    # Using updater.start_polling since we are in a custom loop
+    await application.updater.start_polling()
+    
+    print("🤖 Bot is now polling...")
+    
+    # Keep the loop running forever
     while True:
-        await asyncio.sleep(1)
+        await asyncio.sleep(3600)
 
-def run_bot_in_thread():
-    """Runs the asyncio event loop in a background thread."""
+def run_bot_thread():
+    """Sets up the event loop for the background thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(start_bot())
+    try:
+        loop.run_until_complete(start_bot())
+    except Exception as e:
+        print(f"🔥 Bot Thread Crash: {e}")
 
 # ======================
-# MAIN ENTRY
+# MAIN START
 # ======================
 if __name__ == "__main__":
     print("🚀 Launching Flask server and Telegram bot thread...")
 
-    # Start the bot in a background thread so Flask can run on the main thread
-    bot_thread = threading.Thread(target=run_bot_in_thread, daemon=True)
-    bot_thread.start()
-
-    # Get the port from Render's environment, default to 10000
+    # Start bot in background
+    t = threading.Thread(target=run_bot_thread, daemon=True)
+    t.start()
+    
+    # Run Flask (Render will bind to this)
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
