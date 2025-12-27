@@ -24,8 +24,8 @@ def health():
 # TELEGRAM LOGIC
 # ======================
 async def send_signals(application):
-    """Loop to send messages every 60 seconds."""
-    await asyncio.sleep(10) # Wait for bot to connect
+    """Background loop to send signals."""
+    await asyncio.sleep(15)  # Longer wait to ensure bot is ready
     print("📢 Signal loop starting...")
     while True:
         try:
@@ -35,34 +35,26 @@ async def send_signals(application):
                 text=msg, 
                 parse_mode="Markdown"
             )
-            print("✅ Signal sent")
+            print("✅ Signal sent successfully")
         except Exception as e:
             print(f"❌ Signal Error: {e}")
         await asyncio.sleep(60)
 
 async def start_bot():
-    """Custom startup for v20+ in a thread."""
-    # 1. Build the app
+    """Simplified startup for v21.6"""
+    # 1. Build application
     application = ApplicationBuilder().token(TOKEN).build()
     
-    # 2. Initialize and start the bot engine
-    await application.initialize()
-    await application.start()
+    # 2. Schedule the signal loop
+    application.create_task(send_signals(application))
     
-    # 3. Start the internal updater (this replaces start_polling)
-    if application.updater:
-        await application.updater.start_polling()
-    
-    # 4. Start your custom signal task
-    asyncio.create_task(send_signals(application))
-    print("🤖 Bot is initialized and polling...")
+    # 3. Use the built-in run_polling which handles init/start internally
+    # This is safer than manual start() calls in a thread
+    print("🤖 Bot is starting polling...")
+    await application.run_polling(close_loop=False)
 
-    # Keep the async loop alive
-    while True:
-        await asyncio.sleep(3600)
-
-def run_bot_in_thread():
-    """Creates a new event loop for the thread."""
+def run_bot_thread():
+    """Sets up the event loop for the background thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(start_bot())
@@ -71,12 +63,12 @@ def run_bot_in_thread():
 # MAIN START
 # ======================
 if __name__ == "__main__":
-    print("🚀 Launching Flask and Bot...")
-    
-    # Start bot thread
-    bot_thread = threading.Thread(target=run_bot_in_thread, daemon=True)
+    print("🚀 Launching Flask + Telegram Bot...")
+
+    # Start bot in a single daemon thread
+    bot_thread = threading.Thread(target=run_bot_thread, daemon=True)
     bot_thread.start()
     
-    # Run Flask on main thread
+    # Run Flask
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
