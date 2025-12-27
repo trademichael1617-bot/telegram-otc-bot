@@ -24,9 +24,7 @@ def health():
 # TELEGRAM LOGIC
 # ======================
 async def send_signals(application):
-    """Background loop to send signals."""
-    await asyncio.sleep(15)  # Longer wait to ensure bot is ready
-    print("📢 Signal loop starting...")
+    await asyncio.sleep(10)
     while True:
         try:
             msg = "📊 *OTC SIGNAL*\n\n*Pair:* EURUSD OTC\n*Direction:* BUY 📈"
@@ -35,26 +33,20 @@ async def send_signals(application):
                 text=msg, 
                 parse_mode="Markdown"
             )
-            print("✅ Signal sent successfully")
+            print("Successfully sent signal")
         except Exception as e:
-            print(f"❌ Signal Error: {e}")
+            print(f"Telegram error: {e}")
         await asyncio.sleep(60)
 
 async def start_bot():
-    """Simplified startup for v21.6"""
-    # 1. Build application
     application = ApplicationBuilder().token(TOKEN).build()
-    
-    # 2. Schedule the signal loop
     application.create_task(send_signals(application))
-    
-    # 3. Use the built-in run_polling which handles init/start internally
-    # This is safer than manual start() calls in a thread
-    print("🤖 Bot is starting polling...")
-    await application.run_polling(close_loop=False)
+    await application.initialize()
+    await application.start_polling()
+    while True:
+        await asyncio.sleep(1)
 
 def run_bot_thread():
-    """Sets up the event loop for the background thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(start_bot())
@@ -63,11 +55,9 @@ def run_bot_thread():
 # MAIN START
 # ======================
 if __name__ == "__main__":
-    print("🚀 Launching Flask + Telegram Bot...")
-
-    # Start bot in a single daemon thread
-    bot_thread = threading.Thread(target=run_bot_thread, daemon=True)
-    bot_thread.start()
+    # Start bot in background
+    t = threading.Thread(target=run_bot_thread, daemon=True)
+    t.start()
     
     # Run Flask
     port = int(os.environ.get("PORT", 10000))
