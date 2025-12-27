@@ -7,11 +7,18 @@ from telegram.ext import ApplicationBuilder
 # ======================
 # CONFIG
 # ======================
-TOKEN = os.getenv("BOT_TOKEN", "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ")
-CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003540658518")
+TOKEN = os.getenv(
+    "BOT_TOKEN",
+    "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ"
+)
+
+CHANNEL_ID = os.getenv(
+    "CHANNEL_ID",
+    "-1003540658518"
+)
 
 # ======================
-# FLASK APP (FOR RENDER)
+# FLASK APP (RENDER KEEP-ALIVE)
 # ======================
 app = Flask(__name__)
 
@@ -26,7 +33,7 @@ def health():
 # ======================
 # TELEGRAM SIGNAL LOOP
 # ======================
-async def send_signals(app_tg):
+async def send_signals(tg_app):
     while True:
         try:
             message = (
@@ -36,11 +43,14 @@ async def send_signals(app_tg):
                 "Grade: A+\n"
                 "Confidence: HIGH\n"
             )
-            await app_tg.bot.send_message(
+
+            await tg_app.bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=message
             )
+
             print("✅ Signal sent to Telegram")
+
         except Exception as e:
             print("❌ Telegram error:", e)
 
@@ -51,15 +61,19 @@ async def send_signals(app_tg):
 # ======================
 async def start_telegram_bot():
     print("🤖 Starting Telegram bot...")
-    app_tg = ApplicationBuilder().token(BOT_TOKEN).build()
-    asyncio.create_task(send_signals(app_tg))
-    await app_tg.run_polling()
+
+    tg_app = ApplicationBuilder().token(TOKEN).build()
+
+    # start background signal task
+    asyncio.create_task(send_signals(tg_app))
+
+    await tg_app.run_polling()
 
 # ======================
-# RUN BOT IN THREAD (FIXED)
+# RUN BOT IN SEPARATE THREAD (RENDER FIX)
 # ======================
 def run_bot():
-    loop = asyncio.new_event_loop()      # ✅ FIX
+    loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(start_telegram_bot())
 
@@ -69,7 +83,10 @@ def run_bot():
 if __name__ == "__main__":
     print("🚀 Launching Flask + Telegram bot")
 
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread = threading.Thread(
+        target=run_bot,
+        daemon=True
+    )
     bot_thread.start()
 
     port = int(os.environ.get("PORT", 10000))
