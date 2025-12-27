@@ -24,11 +24,9 @@ def health():
 # TELEGRAM LOGIC
 # ======================
 async def send_signals(application):
-    """Background loop to send signals."""
-    # Wait for the bot to be fully connected before starting
-    await asyncio.sleep(10)
-    print("📢 Signal loop started...")
-    
+    """Loop to send messages every 60 seconds."""
+    await asyncio.sleep(10) # Wait for bot to connect
+    print("📢 Signal loop starting...")
     while True:
         try:
             msg = "📊 *OTC SIGNAL*\n\n*Pair:* EURUSD OTC\n*Direction:* BUY 📈"
@@ -37,53 +35,48 @@ async def send_signals(application):
                 text=msg, 
                 parse_mode="Markdown"
             )
-            print("✅ Signal sent successfully")
+            print("✅ Signal sent")
         except Exception as e:
-            print(f"❌ Telegram error: {e}")
-        
+            print(f"❌ Signal Error: {e}")
         await asyncio.sleep(60)
 
 async def start_bot():
-    """Initializes and runs the bot."""
-    # Build the application
+    """Custom startup for v20+ in a thread."""
+    # 1. Build the app
     application = ApplicationBuilder().token(TOKEN).build()
     
-    # Initialize the bot properly
+    # 2. Initialize and start the bot engine
     await application.initialize()
     await application.start()
     
-    # Start the signal task explicitly
+    # 3. Start the internal updater (this replaces start_polling)
+    if application.updater:
+        await application.updater.start_polling()
+    
+    # 4. Start your custom signal task
     asyncio.create_task(send_signals(application))
-    
-    # Start polling updates (replaces the broken start_polling)
-    # Using updater.start_polling since we are in a custom loop
-    await application.updater.start_polling()
-    
-    print("🤖 Bot is now polling...")
-    
-    # Keep the loop running forever
+    print("🤖 Bot is initialized and polling...")
+
+    # Keep the async loop alive
     while True:
         await asyncio.sleep(3600)
 
-def run_bot_thread():
-    """Sets up the event loop for the background thread."""
+def run_bot_in_thread():
+    """Creates a new event loop for the thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(start_bot())
-    except Exception as e:
-        print(f"🔥 Bot Thread Crash: {e}")
+    loop.run_until_complete(start_bot())
 
 # ======================
 # MAIN START
 # ======================
 if __name__ == "__main__":
-    print("🚀 Launching Flask server and Telegram bot thread...")
-
-    # Start bot in background
-    t = threading.Thread(target=run_bot_thread, daemon=True)
-    t.start()
+    print("🚀 Launching Flask and Bot...")
     
-    # Run Flask (Render will bind to this)
+    # Start bot thread
+    bot_thread = threading.Thread(target=run_bot_in_thread, daemon=True)
+    bot_thread.start()
+    
+    # Run Flask on main thread
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
