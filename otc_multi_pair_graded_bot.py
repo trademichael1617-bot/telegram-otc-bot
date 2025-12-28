@@ -25,10 +25,8 @@ def health():
 # ======================
 async def send_signals(application):
     """Background loop to send signals."""
-    # Wait for the bot to be fully connected before starting
-    await asyncio.sleep(10)
-    print("📢 Signal loop started...")
-    
+    await asyncio.sleep(15)  # Longer wait to ensure bot is ready
+    print("📢 Signal loop starting...")
     while True:
         try:
             msg = "📊 *OTC SIGNAL*\n\n*Pair:* EURUSD OTC\n*Direction:* BUY 📈"
@@ -39,51 +37,38 @@ async def send_signals(application):
             )
             print("✅ Signal sent successfully")
         except Exception as e:
-            print(f"❌ Telegram error: {e}")
-        
+            print(f"❌ Signal Error: {e}")
         await asyncio.sleep(60)
 
 async def start_bot():
-    """Initializes and runs the bot."""
-    # Build the application
+    """Simplified startup for v21.6"""
+    # 1. Build application
     application = ApplicationBuilder().token(TOKEN).build()
     
-    # Initialize the bot properly
-    await application.initialize()
-    await application.start()
+    # 2. Schedule the signal loop
+    application.create_task(send_signals(application))
     
-    # Start the signal task explicitly
-    asyncio.create_task(send_signals(application))
-    
-    # Start polling updates (replaces the broken start_polling)
-    # Using updater.start_polling since we are in a custom loop
-    await application.updater.start_polling()
-    
-    print("🤖 Bot is now polling...")
-    
-    # Keep the loop running forever
-    while True:
-        await asyncio.sleep(3600)
+    # 3. Use the built-in run_polling which handles init/start internally
+    # This is safer than manual start() calls in a thread
+    print("🤖 Bot is starting polling...")
+    await application.run_polling(close_loop=False)
 
 def run_bot_thread():
     """Sets up the event loop for the background thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(start_bot())
-    except Exception as e:
-        print(f"🔥 Bot Thread Crash: {e}")
+    loop.run_until_complete(start_bot())
 
 # ======================
 # MAIN START
 # ======================
 if __name__ == "__main__":
-    print("🚀 Launching Flask server and Telegram bot thread...")
+    print("🚀 Launching Flask + Telegram Bot...")
 
-    # Start bot in background
-    t = threading.Thread(target=run_bot_thread, daemon=True)
-    t.start()
+    # Start bot in a single daemon thread
+    bot_thread = threading.Thread(target=run_bot_thread, daemon=True)
+    bot_thread.start()
     
-    # Run Flask (Render will bind to this)
+    # Run Flask
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
