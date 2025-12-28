@@ -13,170 +13,132 @@ from telegram.ext import ApplicationBuilder
 TOKEN = os.getenv("BOT_TOKEN", "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1003540658518"))
 
-TWELVE_DATA_API = os.getenv("0da718e36a9c4f48a2541dc00d209f62")
+# FIXED: Hardcoded key or proper env lookup
+TWELVE_DATA_API = os.getenv("TD_API_KEY", "0da718e36a9c4f48a2541dc00d209f62")
+
 PAIR = "EUR/USD"
-TIMEFRAME = "10s"  # OTC short-term
+TIMEFRAME = "1min"  # Twelve Data free tier usually supports 1min+, check your plan for 10s
 RSI_PERIOD = 5
 BB_PERIOD = 20
 BB_STD = 2
 MAX_LOSSES = 2
 COOLDOWN_MIN = 15
 
-# ======================
-# FLASK APP
-# ======================
 app = Flask(__name__)
 
 @app.route("/")
-def home():
-    return "Telegram OTC Bot is running ✅"
+def home(): return "Telegram OTC Bot is running ✅"
 
 @app.route("/health")
-def health():
-    return "OK", 200
+def health(): return "OK", 200
 
 # ======================
-# GLOBALS
+# GLOBALS & STATE
 # ======================
 last_trade = {"direction": None, "entry": None, "time": None}
 stats = {"wins": 0, "losses": 0, "streak": 0}
 cooldown_until = datetime.utcnow() - timedelta(minutes=1)
 
 # ======================
-# UTILITIES
+# LOGIC & INDICATORS
 # ======================
 def fetch_candles():
-    """Fetch latest candles from Twelve Data OTC API"""
-    url = f"https://api.twelvedata.com/time_series?symbol={PAIR}&interval={TIMEFRAME}&apikey={TWELVE_DATA_API}&outputsize=10"
-    resp = requests.get(url).json()
-    return resp.get("values", [])
+    """Fetch latest candles from Twelve Data API"""
+    try:
+        url = f"https://api.twelvedata.com/time_series?symbol={PAIR}&interval={TIMEFRAME}&apikey={TWELVE_DATA_API}&outputsize=30"
+        resp = requests.get(url).json()
+        if "values" not in resp:
+            print(f"⚠️ API Error: {resp.get('message', 'Unknown error')}")
+            return []
+        return resp.get("values", [])
+    except Exception as e:
+        print(f"❌ Fetch Error: {e}")
+        return []
 
 def calculate_indicators(candles):
     df = pd.DataFrame(candles)
     df['close'] = df['close'].astype(float)
-    df['rsi'] = df['close'].diff().apply(lambda x: max(x,0)).rolling(RSI_PERIOD).mean()  # simple RSI
-    df['bb_upper'] = df['close'].rolling(BB_PERIOD).mean() + BB_STD * df['close'].rolling(BB_PERIOD).std()
-    df['bb_lower'] = df['close'].rolling(BB_PERIOD).mean() - BB_STD * df['close'].rolling(BB_PERIOD).std()
+    df = df.iloc[::-1] # Reverse to chronological order
+    
+    # Correct RSI Calculation
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
+    rs = gain / loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+    
+    # Bollinger Bands
+    df['sma'] = df['close'].rolling(window=BB_PERIOD).mean()
+    df['std'] = df['close'].rolling(window=BB_PERIOD).std()
+    df['bb_upper'] = df['sma'] + (BB_STD * df['std'])
+    df['bb_lower'] = df['sma'] - (BB_STD * df['std'])
     return df
 
-def check_consolidation(df):
-    """Return True if market is consolidating"""
-    return (df['close'].max() - df['close'].min()) < 0.001  # small range
 
-def session_allowed():
-    """OTC sessions only"""
-    h = datetime.utcnow().hour
-    return (0 <= h <= 6) or (7 <= h <= 11) or (13 <= h <= 16)
 
-def grade_signal(df, direction):
-    """Return signal grade"""
+def grade_signal(df):
     volatility = df['close'].std()
-    if volatility < 0.0005:
-        return "A"
-    elif volatility < 0.001:
-        return "B"
-    else:
-        return "C"
+    if volatility < 0.0005: return "A (High Probability)"
+    if volatility < 0.001: return "B (Moderate)"
+    return "C (High Volatility)"
 
 # ======================
-# TELEGRAM LOGIC
+# ASYNC TASKS
 # ======================
-async def send_signal(app, direction, grade):
-    global last_trade, cooldown_until
-    if datetime.utcnow() < cooldown_until:
-        print("⏱ Cooldown active, skipping signal")
-        return
-    msg = f"📊 OTC SIGNAL\n*Pair:* {PAIR}\n*Direction:* {direction}\n*Grade:* {grade}"
-    await app.bot.send_message(chat_id=CHANNEL_ID, text=msg, parse_mode="Markdown")
-    last_trade["direction"] = direction
-    last_trade["entry"] = float(fetch_candles()[0]["close"])
-    last_trade["time"] = datetime.utcnow()
-    print(f"✅ Signal sent: {direction} | Grade {grade}")
-
-async def signal_loop(app):
+async def signal_loop(tg_app):
+    global last_trade
+    print("📢 Signal scanner started...")
     while True:
-        if not session_allowed():
-            await asyncio.sleep(60)
+        if datetime.utcnow() < cooldown_until:
+            await asyncio.sleep(30)
             continue
 
         candles = fetch_candles()
-        if not candles:
-            await asyncio.sleep(10)
+        if len(candles) < BB_PERIOD:
+            await asyncio.sleep(20)
             continue
 
         df = calculate_indicators(candles)
-        if check_consolidation(df):
-            last_price = df['close'].iloc[-1]
-            rsi = df['rsi'].iloc[-1]
-            bb_upper = df['bb_upper'].iloc[-1]
-            bb_lower = df['bb_lower'].iloc[-1]
+        last_row = df.iloc[-1]
+        
+        # BUY Logic: Price below Lower Band + RSI Oversold
+        if last_row['close'] < last_row['bb_lower'] and last_row['rsi'] < 30:
+            grade = grade_signal(df)
+            await send_signal(tg_app, "BUY 📈", grade, last_row['close'])
+            
+        # SELL Logic: Price above Upper Band + RSI Overbought
+        elif last_row['close'] > last_row['bb_upper'] and last_row['rsi'] > 70:
+            grade = grade_signal(df)
+            await send_signal(tg_app, "SELL 📉", grade, last_row['close'])
 
-            # BUY/SELL logic
-            if last_price < bb_lower:
-                grade = grade_signal(df, "BUY")
-                await send_signal(app, "BUY", grade)
-            elif last_price > bb_upper:
-                grade = grade_signal(df, "SELL")
-                await send_signal(app, "SELL", grade)
+        await asyncio.sleep(30)
 
-        await asyncio.sleep(10)  # 10s timeframe
+async def send_signal(tg_app, direction, grade, price):
+    global last_trade
+    msg = (f"📊 *OTC SIGNAL*\n\n"
+           f"*Pair:* {PAIR}\n"
+           f"*Direction:* {direction}\n"
+           f"*Entry:* {price}\n"
+           f"*Grade:* {grade}\n"
+           f"*Time:* {datetime.utcnow().strftime('%H:%M:%S')} UTC")
+    
+    await tg_app.bot.send_message(chat_id=CHANNEL_ID, text=msg, parse_mode="Markdown")
+    last_trade.update({"direction": direction.split()[0], "entry": price, "time": datetime.utcnow()})
 
-# ======================
-# AUTO RESULT TRACKING
-# ======================
-async def check_trade_result(app):
-    global last_trade, stats, cooldown_until
-    while True:
-        if last_trade["entry"]:
-            candles = fetch_candles()
-            if not candles:
-                await asyncio.sleep(10)
-                continue
-            current_price = float(candles[0]["close"])
-            direction = last_trade["direction"]
-            entry = last_trade["entry"]
-
-            profit = (current_price - entry) if direction == "BUY" else (entry - current_price)
-            if profit > 0:
-                stats["wins"] += 1
-                stats["streak"] = 0
-            else:
-                stats["losses"] += 1
-                stats["streak"] += 1
-                if stats["streak"] >= MAX_LOSSES:
-                    cooldown_until = datetime.utcnow() + timedelta(minutes=COOLDOWN_MIN)
-                    await app.bot.send_message(
-                        chat_id=CHANNEL_ID,
-                        text=f"⚠️ Max losses reached. Cooling down for {COOLDOWN_MIN} mins."
-                    )
-            last_trade.update({"direction": None, "entry": None, "time": None})
-        await asyncio.sleep(60)
-
-# ======================
-# BOT START
-# ======================
 async def start_bot():
-    app_tg = ApplicationBuilder().token(TOKEN).build()
-    await app_tg.initialize()
-    await app_tg.start()
-    asyncio.create_task(signal_loop(app_tg))
-    asyncio.create_task(check_trade_result(app_tg))
-    print("🤖 Bot running...")
-    while True:
-        await asyncio.sleep(3600)
+    tg_app = ApplicationBuilder().token(TOKEN).build()
+    await tg_app.initialize()
+    await tg_app.start()
+    asyncio.create_task(signal_loop(tg_app))
+    print("🤖 Telegram logic initialized")
+    while True: await asyncio.sleep(3600)
 
-def run_bot_in_thread():
+def run_bot_thread():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(start_bot())
 
-# ======================
-# MAIN ENTRY
-# ======================
 if __name__ == "__main__":
-    print("🚀 Launching Flask + Telegram bot")
-    bot_thread = threading.Thread(target=run_bot_in_thread, daemon=True)
-    bot_thread.start()
-
+    threading.Thread(target=run_bot_thread, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
