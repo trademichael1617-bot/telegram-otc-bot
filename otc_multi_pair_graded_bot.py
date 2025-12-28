@@ -17,3 +17,8 @@ async def fetch_candle(pair="EUR/USD", interval="1min"):
         response = await client.get(url, params=params)
         data = response.json()
         return data.get("values", [])  # list of candles
+async def main():
+    candles = await fetch_candle()
+    print("Last 3 candles:", candles[:3])
+
+asyncio.run(main())
