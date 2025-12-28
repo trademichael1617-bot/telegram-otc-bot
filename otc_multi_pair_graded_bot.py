@@ -7,7 +7,7 @@ from telegram.ext import ApplicationBuilder
 # ======================
 # CONFIG (USE ENV VARS)
 # ======================
-TOKEN = "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ"
+TOKEN =os.getenv("BOT_TOKEN", "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ") 
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1003540658518"))
 
 
