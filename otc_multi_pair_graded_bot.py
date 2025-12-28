@@ -5,18 +5,14 @@ from flask import Flask
 from telegram.ext import ApplicationBuilder
 
 # ======================
-# CONFIG (USE ENV VARS)
+# CONFIG
 # ======================
-TOKEN =os.getenv("BOT_TOKEN", "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ") 
+TOKEN = os.getenv("BOT_TOKEN", "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ") 
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1003540658518"))
-
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN not set")
 
-# ======================
-# FLASK APP (RENDER NEEDS THIS)
-# ======================
 app = Flask(__name__)
 
 @app.route("/")
@@ -31,7 +27,8 @@ def health():
 # TELEGRAM LOGIC
 # ======================
 async def send_signals(application):
-    await asyncio.sleep(10)
+    """Background loop to send signals."""
+    await asyncio.sleep(15) # Wait for bot connection to stabilize
     print("📢 Signal loop started")
 
     while True:
@@ -43,21 +40,34 @@ async def send_signals(application):
             )
             print("✅ Signal sent")
         except Exception as e:
-            print("❌ Telegram error:", e)
+            print(f"❌ Telegram error: {e}")
 
         await asyncio.sleep(60)
 
 async def start_bot():
+    """Initializes and runs the bot with thread-safe settings."""
     application = ApplicationBuilder().token(TOKEN).build()
 
-    # schedule background task
+    # 1. Initialize the application components
+    await application.initialize()
+    await application.start()
+    
+    # 2. Schedule background task
     application.create_task(send_signals(application))
 
-    print("🤖 Telegram bot polling started")
-    await application.run_polling()
+    print("🤖 Telegram bot polling started (Signals Disabled)")
+    
+    # 3. run_polling with stop_signals=None is required for background threads
+    await application.run_polling(stop_signals=None, close_loop=False)
 
-def run_bot():
-    asyncio.run(start_bot())
+def run_bot_in_thread():
+    """Creates a dedicated event loop for the background thread."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(start_bot())
+    except Exception as e:
+        print(f"🔥 Bot Thread Error: {e}")
 
 # ======================
 # MAIN ENTRY
@@ -65,7 +75,9 @@ def run_bot():
 if __name__ == "__main__":
     print("🚀 Starting Flask + Telegram bot")
 
-    threading.Thread(target=run_bot, daemon=True).start()
+    # Start bot in background thread
+    threading.Thread(target=run_bot_in_thread, daemon=True).start()
 
+    # Start Flask on main thread
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
