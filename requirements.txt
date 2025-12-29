@@ -1,6 +1,9 @@
 python-telegram-bot==21.6
-Flask==3.1.2
 httpx==0.28.1
-requests==2.32.3
+python-telegram-bot==21.6
 pandas==2.2.3
+pandas-ta==0.3.14b0
+twelvedata==1.2.11
+requests==2.32.3
+Flask==3.1.2
 numpy
