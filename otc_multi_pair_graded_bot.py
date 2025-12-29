@@ -102,4 +102,4 @@ if __name__ == "__main__":
     loop.create_task(signal_loop(app))
     
     print("Bot is initializing...")
-    app.run_polling()import os
+    app.run_polling()
