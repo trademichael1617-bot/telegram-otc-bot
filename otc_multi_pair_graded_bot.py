@@ -1,103 +1,144 @@
 import os
 import asyncio
+import threading
+from datetime import datetime, timedelta
+import requests
 import pandas as pd
-import pandas_ta as ta
-from datetime import datetime, timezone
-from twelvedata import TDClient
+from flask import Flask
 from telegram.ext import ApplicationBuilder
 
-# --- CONFIGURATION ---
+# ======================
+# CONFIG
+# ======================
 TOKEN = os.getenv("BOT_TOKEN", "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1003540658518"))
+
+# FIXED: Hardcoded key or proper env lookup
 TWELVE_DATA_API = os.getenv("TD_API_KEY", "0da718e36a9c4f48a2541dc00d209f62")
-PAIR = "EUR/USD" # Removed 'OTC' as Twelve Data uses standard symbols for composite feeds
 
-# Global variables to prevent spam/repeats
-last_signal_time = None
-last_signal_type = None
+PAIR = "EUR/USD"
+TIMEFRAME = "1min"  # Twelve Data free tier usually supports 1min+, check your plan for 10s
+RSI_PERIOD = 5
+BB_PERIOD = 20
+BB_STD = 2
+MAX_LOSSES = 2
+COOLDOWN_MIN = 15
 
-# Initialize Twelve Data
-td = TDClient(apikey=TWELVE_DATA_API)
+app = Flask(__name__)
 
-def fetch_and_analyze():
-    """Fetches data and calculates indicators."""
+@app.route("/")
+def home(): return "Telegram OTC Bot is running ✅"
+
+@app.route("/health")
+def health(): return "OK", 200
+
+# ======================
+# GLOBALS & STATE
+# ======================
+last_trade = {"direction": None, "entry": None, "time": None}
+stats = {"wins": 0, "losses": 0, "streak": 0}
+cooldown_until = datetime.utcnow() - timedelta(minutes=1)
+
+# ======================
+# LOGIC & INDICATORS
+# ======================
+def fetch_candles():
+    """Fetch latest candles from Twelve Data API"""
     try:
-        # Fetch 50 candles (1min interval)
-        ts = td.time_series(symbol=PAIR, interval="1min", outputsize=50).as_pandas()
-        
-        # Calculate Indicators using pandas_ta
-        ts['rsi'] = ta.rsi(ts['close'], length=14)
-        bb = ta.bbands(ts['close'], length=20, std=2)
-        ts = pd.concat([ts, bb], axis=1)
-
-        # Get the latest row
-        latest = ts.iloc[-1]
-        
-        signal_data = {
-            "time": latest.name,
-            "price": round(latest['close'], 5),
-            "rsi": latest['rsi'],
-            "upper": latest['BBU_20_2.0'],
-            "lower": latest['BBL_20_2.0'],
-            "direction": None,
-            "grade": "C"
-        }
-
-        # Strategy Logic (Bollinger + RSI)
-        if signal_data['price'] > signal_data['upper'] and signal_data['rsi'] > 70:
-            signal_data['direction'] = "SELL 📉"
-            signal_data['grade'] = "A+" if signal_data['rsi'] > 80 else "B"
-        elif signal_data['price'] < signal_data['lower'] and signal_data['rsi'] < 30:
-            signal_data['direction'] = "BUY 📈"
-            signal_data['grade'] = "A+" if signal_data['rsi'] < 20 else "B"
-
-        return signal_data
+        url = f"https://api.twelvedata.com/time_series?symbol={PAIR}&interval={TIMEFRAME}&apikey={TWELVE_DATA_API}&outputsize=30"
+        resp = requests.get(url).json()
+        if "values" not in resp:
+            print(f"⚠️ API Error: {resp.get('message', 'Unknown error')}")
+            return []
+        return resp.get("values", [])
     except Exception as e:
-        print(f"Error fetching data: {e}")
-        return None
+        print(f"❌ Fetch Error: {e}")
+        return []
 
+def calculate_indicators(candles):
+    df = pd.DataFrame(candles)
+    df['close'] = df['close'].astype(float)
+    df = df.iloc[::-1] # Reverse to chronological order
+    
+    # Correct RSI Calculation
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
+    rs = gain / loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+    
+    # Bollinger Bands
+    df['sma'] = df['close'].rolling(window=BB_PERIOD).mean()
+    df['std'] = df['close'].rolling(window=BB_PERIOD).std()
+    df['bb_upper'] = df['sma'] + (BB_STD * df['std'])
+    df['bb_lower'] = df['sma'] - (BB_STD * df['std'])
+    return df
+
+
+
+def grade_signal(df):
+    volatility = df['close'].std()
+    if volatility < 0.0005: return "A (High Probability)"
+    if volatility < 0.001: return "B (Moderate)"
+    return "C (High Volatility)"
+
+# ======================
+# ASYNC TASKS
+# ======================
 async def signal_loop(tg_app):
-    global last_signal_time, last_signal_type
-    
-    print(f"📢 Scanner started. Monitoring {PAIR}...")
-    
+    global last_trade
+    print("📢 Signal scanner started...")
     while True:
-        data = fetch_and_analyze()
+        if datetime.utcnow() < cooldown_until:
+            await asyncio.sleep(30)
+            continue
+
+        candles = fetch_candles()
+        if len(candles) < BB_PERIOD:
+            await asyncio.sleep(20)
+            continue
+
+        df = calculate_indicators(candles)
+        last_row = df.iloc[-1]
         
-        if data and data['direction']:
-            # DEDUPLICATION: Only alert if candle time or direction is new
-            if data['time'] != last_signal_time or data['direction'] != last_signal_type:
-                msg = (
-                    f"🎯 *NEW SIGNAL DETECTED*\n\n"
-                    f"💎 *Pair:* {PAIR}\n"
-                    f"↕️ *Action:* {data['direction']}\n"
-                    f"💵 *Entry Price:* {data['price']}\n"
-                    f"⭐ *Grade:* {data['grade']}\n"
-                    f"🕒 *Time:* {data['time'].strftime('%H:%M')} UTC\n\n"
-                    f"📊 *RSI:* {round(data['rsi'], 2)}"
-                )
-                
-                try:
-                    await tg_app.bot.send_message(chat_id=CHANNEL_ID, text=msg, parse_mode="Markdown")
-                    last_signal_time = data['time']
-                    last_signal_type = data['direction']
-                    print(f"✅ Signal Sent: {data['direction']} at {data['price']}")
-                except Exception as e:
-                    print(f"❌ Telegram Send Error: {e}")
-            else:
-                print(f"⏳ Signal active but already sent for {data['time']}.")
-        else:
-            p = data['price'] if data else "N/A"
-            print(f"🔎 Scanning... No signal. Price: {p}")
+        # BUY Logic: Price below Lower Band + RSI Oversold
+        if last_row['close'] < last_row['bb_lower'] and last_row['rsi'] < 30:
+            grade = grade_signal(df)
+            await send_signal(tg_app, "BUY 📈", grade, last_row['close'])
+            
+        # SELL Logic: Price above Upper Band + RSI Overbought
+        elif last_row['close'] > last_row['bb_upper'] and last_row['rsi'] > 70:
+            grade = grade_signal(df)
+            await send_signal(tg_app, "SELL 📉", grade, last_row['close'])
 
         await asyncio.sleep(30)
 
+async def send_signal(tg_app, direction, grade, price):
+    global last_trade
+    msg = (f"📊 *OTC SIGNAL*\n\n"
+           f"*Pair:* {PAIR}\n"
+           f"*Direction:* {direction}\n"
+           f"*Entry:* {price}\n"
+           f"*Grade:* {grade}\n"
+           f"*Time:* {datetime.utcnow().strftime('%H:%M:%S')} UTC")
+    
+    await tg_app.bot.send_message(chat_id=CHANNEL_ID, text=msg, parse_mode="Markdown")
+    last_trade.update({"direction": direction.split()[0], "entry": price, "time": datetime.utcnow()})
+
+async def start_bot():
+    tg_app = ApplicationBuilder().token(TOKEN).build()
+    await tg_app.initialize()
+    await tg_app.start()
+    asyncio.create_task(signal_loop(tg_app))
+    print("🤖 Telegram logic initialized")
+    while True: await asyncio.sleep(3600)
+
+def run_bot_thread():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_bot())
+
 if __name__ == "__main__":
-    # Use 'TOKEN' variable as defined at the top
-    app = ApplicationBuilder().token(TOKEN).build()
-    
-    loop = asyncio.get_event_loop()
-    loop.create_task(signal_loop(app))
-    
-    print("Bot is initializing...")
-    app.run_polling()
+    threading.Thread(target=run_bot_thread, daemon=True).start()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
