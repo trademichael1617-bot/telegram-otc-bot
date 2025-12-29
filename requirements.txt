@@ -2,7 +2,7 @@ python-telegram-bot==21.6
 httpx==0.28.1
 python-telegram-bot==21.6
 pandas==2.2.3
-pandas-ta==0.3.14b0
+pandas-ta
 twelvedata==1.2.11
 requests==2.32.3
 Flask==3.1.2
