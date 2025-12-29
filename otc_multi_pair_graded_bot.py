@@ -5,21 +5,19 @@ import pandas_ta as ta
 from datetime import datetime, timezone
 from twelvedata import TDClient
 from telegram.ext import ApplicationBuilder
+
 # --- CONFIGURATION ---
 TOKEN = os.getenv("BOT_TOKEN", "8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1003540658518"))
-
-# FIXED: Hardcoded key or proper env lookup
 TWELVE_DATA_API = os.getenv("TD_API_KEY", "0da718e36a9c4f48a2541dc00d209f62")
-PAIR = "EUR/USD OTC" # Or your preferred OTC pair
-
+PAIR = "EUR/USD" # Removed 'OTC' as Twelve Data uses standard symbols for composite feeds
 
 # Global variables to prevent spam/repeats
 last_signal_time = None
 last_signal_type = None
 
 # Initialize Twelve Data
-td = TDClient(apikey=API_KEY)
+td = TDClient(apikey=TWELVE_DATA_API)
 
 def fetch_and_analyze():
     """Fetches data and calculates indicators."""
@@ -61,13 +59,13 @@ def fetch_and_analyze():
 async def signal_loop(tg_app):
     global last_signal_time, last_signal_type
     
-    print("📢 Scanner started. Monitoring EUR/USD...")
+    print(f"📢 Scanner started. Monitoring {PAIR}...")
     
     while True:
         data = fetch_and_analyze()
         
         if data and data['direction']:
-            # This check ensures we only alert once per candle time/direction
+            # DEDUPLICATION: Only alert if candle time or direction is new
             if data['time'] != last_signal_time or data['direction'] != last_signal_type:
                 msg = (
                     f"🎯 *NEW SIGNAL DETECTED*\n\n"
@@ -79,25 +77,25 @@ async def signal_loop(tg_app):
                     f"📊 *RSI:* {round(data['rsi'], 2)}"
                 )
                 
-                await tg_app.bot.send_message(chat_id=CHANNEL_ID, text=msg, parse_mode="Markdown")
-                
-                # Update memory to prevent repeating the same signal
-                last_signal_time = data['time']
-                last_signal_type = data['direction']
-                print(f"✅ Signal Sent: {data['direction']} at {data['price']}")
+                try:
+                    await tg_app.bot.send_message(chat_id=CHANNEL_ID, text=msg, parse_mode="Markdown")
+                    last_signal_time = data['time']
+                    last_signal_type = data['direction']
+                    print(f"✅ Signal Sent: {data['direction']} at {data['price']}")
+                except Exception as e:
+                    print(f"❌ Telegram Send Error: {e}")
             else:
-                print(f"⏳ Already alerted for {data['direction']} at {data['time']}. Waiting...")
+                print(f"⏳ Signal active but already sent for {data['time']}.")
         else:
             p = data['price'] if data else "N/A"
             print(f"🔎 Scanning... No signal. Price: {p}")
 
-        # Wait 30 seconds between checks
         await asyncio.sleep(30)
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # Use 'TOKEN' variable as defined at the top
+    app = ApplicationBuilder().token(TOKEN).build()
     
-    # Run the background scanner
     loop = asyncio.get_event_loop()
     loop.create_task(signal_loop(app))
     
