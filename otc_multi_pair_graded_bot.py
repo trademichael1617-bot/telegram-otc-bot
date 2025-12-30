@@ -24,8 +24,9 @@ CHAT_ID = os.getenv("CHAT_ID")
 TD_KEY = os.getenv("TWELVE_DATA_KEY")
 AV_KEY = os.getenv("ALPHA_VANTAGE_KEY")
 
-PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY"]
-LOW_TF = "1min"   # Twelve Data and Alpha Vantage use '1min'
+# FOCUS: EUR/USD Only
+PAIRS = ["EUR/USD"] 
+LOW_TF = "1min"
 HIGH_TF = "5min" 
 
 RSI_PERIOD = 5
@@ -37,7 +38,10 @@ BB_STD = 2
 COOLDOWN_MINUTES = 5
 MAX_LOSSES = 2
 LOSS_PAUSE_MINUTES = 30
-OTC_SESSIONS = [(0, 6), (12, 16)]
+
+# TRADING WINDOW: 10 AM to 9 PM (GMT/UTC)
+START_HOUR = 10
+END_HOUR = 21
 
 # Initialize Clients
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -65,7 +69,6 @@ def fetch_candles(symbol, tf):
     if av_client:
         try:
             av_symbol = symbol.replace("/", "")
-            # AV uses different interval strings
             av_tf = '1min' if '1' in tf else '5min'
             data, _ = av_client.get_intraday(symbol=av_symbol, interval=av_tf, outputsize='compact')
             df = data.copy()
@@ -80,7 +83,7 @@ def fetch_candles(symbol, tf):
         yf_tf = '1m' if '1' in tf else '5m'
         df = yf.download(yf_symbol, period="1d", interval=yf_tf, progress=False)
         if not df.empty:
-            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns] # Fix multi-index
+            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns] 
             df = df.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close'})
             return df.sort_index()
     except Exception as e:
@@ -94,9 +97,10 @@ def fetch_candles(symbol, tf):
 def utc_now():
     return datetime.now(timezone.utc)
 
-def in_otc_session():
+def in_trading_window():
+    """Checks if current time is between 10 AM and 9 PM GMT."""
     hour = utc_now().hour
-    return any(start <= hour < end for start, end in OTC_SESSIONS)
+    return START_HOUR <= hour < END_HOUR
 
 def send(msg):
     async def _send():
@@ -145,19 +149,31 @@ def signal_loop():
     while True:
         try:
             now = utc_now()
-            if now < cooldown_until or now < loss_pause_until or open_trade or not in_otc_session():
+            
+            # Check for Trading Window (10 AM - 9 PM)
+            if not in_trading_window():
+                # If outside window, wait longer before checking again
+                time.sleep(300) 
+                continue
+
+            if now < cooldown_until or now < loss_pause_until or open_trade:
                 time.sleep(30); continue
 
-            for pair in PAIRS:
-                signal = multi_tf_confirm(pair)
-                if signal:
-                    df = fetch_candles(pair, LOW_TF)
+            # Analyze only EUR/USD
+            pair = "EUR/USD"
+            signal = multi_tf_confirm(pair)
+            
+            if signal:
+                df = fetch_candles(pair, LOW_TF)
+                if df is not None:
                     price = round(df.iloc[-1]["close"], 5)
-                    send(f"🚨 *STRATEGY SIGNAL*\n\n*Pair:* {pair}\n*Dir:* {signal}\n*Price:* {price}")
+                    send(f"🚨 *STRATEGY SIGNAL (EUR/USD)*\n\n*Dir:* {signal}\n*Price:* {price}")
                     open_trade = {"pair": pair, "direction": signal}
                     cooldown_until = now + timedelta(minutes=COOLDOWN_MINUTES)
-                    break
-            time.sleep(20)
+            
+            # Scanning frequency (every 30 seconds inside the window)
+            time.sleep(30)
+            
         except Exception as e:
             print(f"Loop Error: {e}"); time.sleep(10)
 
@@ -178,7 +194,9 @@ def trade_result(result):
     return "OK"
 
 @app.route("/")
-def home(): return "Multi-API Bot Active"
+def home(): 
+    status = "OPEN" if in_trading_window() else "CLOSED"
+    return f"EUR/USD Bot Active. Trading Window: {status}"
 
 if __name__ == "__main__":
     threading.Thread(target=signal_loop, daemon=True).start()
