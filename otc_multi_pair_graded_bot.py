@@ -1,76 +1,209 @@
 import os
 import time
-import requests
+import threading
+from datetime import datetime, timedelta, timezone
+
 import pandas as pd
 import pandas_ta as ta
 from flask import Flask
+from telegram import Bot
 from twelvedata import TDClient
-import threading
 
-# --- 1. CONFIGURATION ---
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
-TD_API_KEY = "YOUR_TWELVE_DATA_API_KEY"
+# =========================
+# CONFIG
+# =========================
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_KEY")
 
-# We check these pairs (Keeping it small saves API credits)
-SYMBOLS = ["EUR/USD", "GBP/USD", "USD/JPY"]
+PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY"]
+LOW_TF = "1min"
+HIGH_TF = "5min"
 
+RSI_PERIOD = 5
+RSI_UPPER = 90
+RSI_LOWER = 10
+
+BB_PERIOD = 20
+BB_STD = 2
+
+COOLDOWN_MINUTES = 5
+MAX_LOSSES = 2
+LOSS_PAUSE_MINUTES = 30
+
+NEWS_BLACKOUT_MINUTES = 10
+
+# OTC sessions (UTC)
+OTC_SESSIONS = [
+    (0, 6),    # Asia
+    (12, 16),  # NY OTC overlap
+]
+
+# =========================
+# HELPERS
+# =========================
+def utc_now():
+    return datetime.now(timezone.utc)
+
+def in_otc_session():
+    hour = utc_now().hour
+    return any(start <= hour < end for start, end in OTC_SESSIONS)
+
+bot = Bot(token=TELEGRAM_TOKEN)
+td = TDClient(apikey=TWELVE_DATA_KEY)
 app = Flask(__name__)
 
-@app.route('/')
-def health_check():
-    return "Pocket Option Strategy Bot is Running!", 200
+# =========================
+# STATE
+# =========================
+cooldown_until = utc_now() - timedelta(minutes=1)
+loss_pause_until = utc_now() - timedelta(minutes=1)
+open_trade = None
+loss_count = 0
 
-# --- 2. TELEGRAM FUNCTION ---
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print(f"Telegram error: {e}")
+# =========================
+# DATA
+# =========================
+def fetch_candles(symbol, tf):
+    ts = td.time_series(
+        symbol=symbol,
+        interval=tf,
+        outputsize=100,
+        timezone="UTC"
+    )
+    df = ts.as_pandas().astype(float)
+    return df
 
-# --- 3. THE STRATEGY (RSI + BB) ---
-def analyze_markets():
-    td = TDClient(apikey=TD_API_KEY)
-    
-    for symbol in SYMBOLS:
+# =========================
+# ANALYSIS
+# =========================
+def analyze(df):
+    df["rsi"] = ta.rsi(df["close"], length=RSI_PERIOD)
+    bb = ta.bbands(df["close"], length=BB_PERIOD, std=BB_STD)
+    df = pd.concat([df, bb], axis=1)
+
+    latest = df.iloc[-1]
+
+    bb_width = (latest["BBU_20_2.0"] - latest["BBL_20_2.0"]) / latest["close"]
+    if bb_width > 0.01:
+        return None  # not consolidating
+
+    if latest["rsi"] >= RSI_UPPER:
+        return "SELL"
+    if latest["rsi"] <= RSI_LOWER:
+        return "BUY"
+
+    return None
+
+def multi_tf_confirm(pair):
+    low = analyze(fetch_candles(pair, LOW_TF))
+    high = analyze(fetch_candles(pair, HIGH_TF))
+    return low if low and low == high else None
+
+# =========================
+# NEWS BLACKOUT (MANUAL SLOT)
+# =========================
+def in_news_blackout():
+    # Placeholder: block whole hour around major news
+    return utc_now().minute >= (60 - NEWS_BLACKOUT_MINUTES)
+
+# =========================
+# ALERTS
+# =========================
+def send(msg):
+    bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+
+# =========================
+# MAIN LOOP
+# =========================
+def signal_loop():
+    global cooldown_until, open_trade, loss_count, loss_pause_until
+
+    while True:
         try:
-            # Fetch 1-minute candles
-            ts = td.time_series(symbol=symbol, interval="1min", outputsize=40).as_pandas()
-            
-            # Indicators
-            bb = ta.bbands(ts['close'], length=20, std=2)
-            rsi = ta.rsi(ts['close'], length=14)
-            
-            curr_price = ts['close'].iloc[-1]
-            lower_b = bb['BBL_20_2.0'].iloc[-1]
-            upper_b = bb['BBU_20_2.0'].iloc[-1]
-            curr_rsi = rsi.iloc[-1]
+            now = utc_now()
 
-            # Logic for signals
-            if curr_price <= lower_b and curr_rsi <= 30:
-                grade = "GRADE A" if curr_rsi <= 25 else "GRADE B"
-                msg = f"🟢 *{grade} CALL SIGNAL*\nAsset: {symbol}\nPrice: {curr_price}\nRSI: {curr_rsi:.2f}"
-                send_telegram(msg)
+            if now < cooldown_until or now < loss_pause_until:
+                time.sleep(10)
+                continue
 
-            elif curr_price >= upper_b and curr_rsi >= 70:
-                grade = "GRADE A" if curr_rsi >= 75 else "GRADE B"
-                msg = f"🔴 *{grade} PUT SIGNAL*\nAsset: {symbol}\nPrice: {curr_price}\nRSI: {curr_rsi:.2f}"
-                send_telegram(msg)
+            if not in_otc_session():
+                time.sleep(30)
+                continue
+
+            if in_news_blackout():
+                time.sleep(30)
+                continue
+
+            if open_trade:
+                time.sleep(10)
+                continue
+
+            for pair in PAIRS:
+                signal = multi_tf_confirm(pair)
+                if not signal:
+                    continue
+
+                price = fetch_candles(pair, LOW_TF).iloc[-1]["close"]
+
+                send(
+                    f"📊 *OTC ENTRY OPEN*\n\n"
+                    f"*Pair:* {pair}\n"
+                    f"*Direction:* {signal}\n"
+                    f"*Price:* {price}\n"
+                    f"*Time:* {now.strftime('%H:%M:%S')} UTC"
+                )
+
+                open_trade = {
+                    "pair": pair,
+                    "direction": signal,
+                    "price": price,
+                    "time": now
+                }
+
+                cooldown_until = now + timedelta(minutes=COOLDOWN_MINUTES)
+                break
+
+            time.sleep(10)
 
         except Exception as e:
-            print(f"Error on {symbol}: {e}")
+            print("ERROR:", e)
+            time.sleep(10)
 
-# --- 4. THE LOOP ---
-def run_bot():
-    while True:
-        analyze_markets()
-        # Sleep 5 mins (300s) to keep Twelve Data Free Credits safe
-        time.sleep(300)
+# =========================
+# SIMULATED TRADE CLOSE (MANUAL HOOK)
+# =========================
+@app.route("/trade/<result>")
+def trade_result(result):
+    global open_trade, loss_count, loss_pause_until
 
+    if not open_trade:
+        return "No open trade"
+
+    if result == "loss":
+        loss_count += 1
+        send("❌ *Trade Closed: LOSS*")
+    else:
+        loss_count = 0
+        send("✅ *Trade Closed: WIN*")
+
+    if loss_count >= MAX_LOSSES:
+        loss_pause_until = utc_now() + timedelta(minutes=LOSS_PAUSE_MINUTES)
+        send("⛔ *Bot Paused: 2 Losses Hit*")
+
+    open_trade = None
+    return "OK"
+
+# =========================
+# FLASK
+# =========================
+@app.route("/")
+def home():
+    return "OTC Bot Live"
+
+# =========================
+# START
+# =========================
 if __name__ == "__main__":
-    # Start bot in background, Flask in foreground
-    threading.Thread(target=run_bot, daemon=True).start()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    threading.Thread(target=signal_loop, daemon=True).start()
+    app.run(host="0.0.0.0", port=10000)
