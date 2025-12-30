@@ -37,7 +37,7 @@ def health(): return "OK", 200
 # ======================
 last_trade = {"direction": None, "entry": None, "time": None}
 stats = {"wins": 0, "losses": 0, "streak": 0}
-cooldown_until = datetime.utcnow() - timedelta(minutes=1)
+cooldown_until = utc_now() - timedelta(minutes=1)
 
 # ======================
 # LOGIC & INDICATORS
@@ -89,7 +89,7 @@ async def signal_loop(tg_app):
     global last_trade
     print("📢 Signal scanner started...")
     while True:
-        if datetime.utcnow() < cooldown_until:
+        if utcnow() < cooldown_until:
             await asyncio.sleep(30)
             continue
 
