@@ -11,11 +11,11 @@ from telegram import Bot
 import finnhub  # Replaced Twelve Data
 
 # =========================
-# CONFIG
+# CONFIG (FIXED)
 # =========================
-TELEGRAM_TOKEN = os.getenv("8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ")
-CHAT_ID = os.getenv("1003540658518")
-FINNHUB_KEY = os.getenv("d59timhr01qu56mus5jgd59timhr01qu56mus5k0") # Ensure this is set in Render
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+FINNHUB_KEY = os.getenv("FINNHUB_KEY") # Ensure this is set in Render
 
 PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY"]
 LOW_TF = "1"  # Finnhub uses '1' for 1min
