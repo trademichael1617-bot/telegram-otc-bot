@@ -1,24 +1,25 @@
 import os
 import time
 import threading
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import pandas_ta as ta
 from flask import Flask
 from telegram import Bot
-from twelvedata import TDClient
+import finnhub  # Replaced Twelve Data
 
 # =========================
 # CONFIG
 # =========================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_KEY")
+TELEGRAM_TOKEN = os.getenv("8574406761:AAFSLmSLUNtuTIc2vtl7K8JMDIXiM2IDxNQ")
+CHAT_ID = os.getenv("1003540658518")
+FINNHUB_KEY = os.getenv("d59timhr01qu56mus5jgd59timhr01qu56mus5k0") # Ensure this is set in Render
 
 PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY"]
-LOW_TF = "1min"
-HIGH_TF = "5min"
+LOW_TF = "1"  # Finnhub uses '1' for 1min
+HIGH_TF = "5" # Finnhub uses '5' for 5min
 
 RSI_PERIOD = 5
 RSI_UPPER = 90
@@ -30,14 +31,9 @@ BB_STD = 2
 COOLDOWN_MINUTES = 5
 MAX_LOSSES = 2
 LOSS_PAUSE_MINUTES = 30
-
 NEWS_BLACKOUT_MINUTES = 10
 
-# OTC sessions (UTC)
-OTC_SESSIONS = [
-    (0, 6),    # Asia
-    (12, 16),  # NY OTC overlap
-]
+OTC_SESSIONS = [(0, 6), (12, 16)]
 
 # =========================
 # HELPERS
@@ -49,9 +45,20 @@ def in_otc_session():
     hour = utc_now().hour
     return any(start <= hour < end for start, end in OTC_SESSIONS)
 
+# Initialize Clients
 bot = Bot(token=TELEGRAM_TOKEN)
-td = TDClient(apikey=TWELVE_DATA_KEY)
+finnhub_client = finnhub.Client(api_key=FINNHUB_KEY)
 app = Flask(__name__)
+
+# Bridge for Async Telegram
+def send(msg):
+    async def _send():
+        async with bot:
+            await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+    try:
+        asyncio.run(_send())
+    except Exception as e:
+        print(f"Telegram Error: {e}")
 
 # =========================
 # STATE
@@ -62,148 +69,115 @@ open_trade = None
 loss_count = 0
 
 # =========================
-# DATA
+# DATA (FINNHUB VERSION)
 # =========================
 def fetch_candles(symbol, tf):
-    ts = td.time_series(
-        symbol=symbol,
-        interval=tf,
-        outputsize=100,
-        timezone="UTC"
-    )
-    df = ts.as_pandas().astype(float)
-    return df
+    end = int(time.time())
+    start = end - (100 * 60) # Last 100 minutes
+    
+    # Forex uses 'forex_candle', Stocks use 'candle'
+    res = finnhub_client.forex_candle(f"OANDA:{symbol.replace('/', '_')}", tf, start, end)
+    
+    if res['s'] == 'ok':
+        df = pd.DataFrame(res)
+        # Map Finnhub letters to standard names
+        df = df.rename(columns={'c': 'close', 'h': 'high', 'l': 'low', 'o': 'open', 't': 'time'})
+        df['close'] = df['close'].astype(float)
+        return df
+    return None
 
 # =========================
 # ANALYSIS
 # =========================
 def analyze(df):
+    if df is None or df.empty: return None
+    
     df["rsi"] = ta.rsi(df["close"], length=RSI_PERIOD)
     bb = ta.bbands(df["close"], length=BB_PERIOD, std=BB_STD)
     df = pd.concat([df, bb], axis=1)
 
     latest = df.iloc[-1]
+    
+    # Dynamic column names for BB
+    l_col = [c for c in bb.columns if "BBL" in c][0]
+    u_col = [c for c in bb.columns if "BBU" in c][0]
 
-    bb_width = (latest["BBU_20_2.0"] - latest["BBL_20_2.0"]) / latest["close"]
+    bb_width = (latest[u_col] - latest[l_col]) / latest["close"]
     if bb_width > 0.01:
-        return None  # not consolidating
+        return None  
 
     if latest["rsi"] >= RSI_UPPER:
         return "SELL"
     if latest["rsi"] <= RSI_LOWER:
         return "BUY"
-
     return None
 
 def multi_tf_confirm(pair):
-    low = analyze(fetch_candles(pair, LOW_TF))
-    high = analyze(fetch_candles(pair, HIGH_TF))
-    return low if low and low == high else None
+    low_df = fetch_candles(pair, LOW_TF)
+    high_df = fetch_candles(pair, HIGH_TF)
+    
+    low_sig = analyze(low_df)
+    high_sig = analyze(high_df)
+    
+    return low_sig if low_sig and low_sig == high_sig else None
 
 # =========================
-# NEWS BLACKOUT (MANUAL SLOT)
+# LOGIC & LOOPS
 # =========================
 def in_news_blackout():
-    # Placeholder: block whole hour around major news
     return utc_now().minute >= (60 - NEWS_BLACKOUT_MINUTES)
 
-# =========================
-# ALERTS
-# =========================
-def send(msg):
-    bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-
-# =========================
-# MAIN LOOP
-# =========================
 def signal_loop():
     global cooldown_until, open_trade, loss_count, loss_pause_until
 
     while True:
         try:
             now = utc_now()
-
             if now < cooldown_until or now < loss_pause_until:
-                time.sleep(10)
-                continue
+                time.sleep(10); continue
 
-            if not in_otc_session():
-                time.sleep(30)
-                continue
-
-            if in_news_blackout():
-                time.sleep(30)
-                continue
-
-            if open_trade:
-                time.sleep(10)
-                continue
+            if not in_otc_session() or in_news_blackout() or open_trade:
+                time.sleep(30); continue
 
             for pair in PAIRS:
                 signal = multi_tf_confirm(pair)
-                if not signal:
-                    continue
+                if not signal: continue
 
                 price = fetch_candles(pair, LOW_TF).iloc[-1]["close"]
+                
+                send(f"📊 *FINNHUB ENTRY*\n\n*Pair:* {pair}\n*Dir:* {signal}\n*Price:* {price}")
 
-                send(
-                    f"📊 *OTC ENTRY OPEN*\n\n"
-                    f"*Pair:* {pair}\n"
-                    f"*Direction:* {signal}\n"
-                    f"*Price:* {price}\n"
-                    f"*Time:* {now.strftime('%H:%M:%S')} UTC"
-                )
-
-                open_trade = {
-                    "pair": pair,
-                    "direction": signal,
-                    "price": price,
-                    "time": now
-                }
-
+                open_trade = {"pair": pair, "direction": signal}
                 cooldown_until = now + timedelta(minutes=COOLDOWN_MINUTES)
                 break
 
-            time.sleep(10)
-
+            time.sleep(15) # Safety gap
         except Exception as e:
-            print("ERROR:", e)
+            print(f"Loop Error: {e}")
             time.sleep(10)
 
-# =========================
-# SIMULATED TRADE CLOSE (MANUAL HOOK)
-# =========================
 @app.route("/trade/<result>")
 def trade_result(result):
     global open_trade, loss_count, loss_pause_until
-
-    if not open_trade:
-        return "No open trade"
-
+    if not open_trade: return "No open trade"
+    
     if result == "loss":
         loss_count += 1
-        send("❌ *Trade Closed: LOSS*")
+        send("❌ *LOSS*")
     else:
         loss_count = 0
-        send("✅ *Trade Closed: WIN*")
+        send("✅ *WIN*")
 
     if loss_count >= MAX_LOSSES:
         loss_pause_until = utc_now() + timedelta(minutes=LOSS_PAUSE_MINUTES)
-        send("⛔ *Bot Paused: 2 Losses Hit*")
+        send("⛔ *PAUSED*")
 
     open_trade = None
     return "OK"
 
-# =========================
-# FLASK
-# =========================
 @app.route("/")
-def home():
-    return "OTC Bot Live"
+def home(): return "Finnhub Bot Active"
 
-# =========================
-# START
-# =========================
 if __name__ == "__main__":
     threading.Thread(target=signal_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=10000)
