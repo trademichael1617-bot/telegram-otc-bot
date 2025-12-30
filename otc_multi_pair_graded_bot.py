@@ -76,18 +76,20 @@ def fetch_candles(symbol, tf):
     formatted_symbol = f"OANDA:{symbol.replace('/', '_')}"
     
     try:
-        # Changed to stock_candle to support current Finnhub library
-        res = finnhub_client.stock_candle(formatted_symbol, tf, start, end)
+        # Use 'forex_candles' (notice the 's' at the end)
+        res = finnhub_client.forex_candles(formatted_symbol, tf, start, end)
         
         if res.get('s') == 'ok':
             df = pd.DataFrame(res)
+            # Standardize column names
             df = df.rename(columns={'c': 'close', 'h': 'high', 'l': 'low', 'o': 'open', 't': 'time'})
             df['close'] = df['close'].astype(float)
             return df
+        else:
+            print(f"Finnhub status not OK for {symbol}: {res.get('s')}")
     except Exception as e:
         print(f"API Error: {e}")
     return None
-
 # =========================
 # ANALYSIS
 # =========================
