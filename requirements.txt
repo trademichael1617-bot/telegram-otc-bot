@@ -1,10 +1,10 @@
-setuptools
-python-telegram-bot==21.6
+gunicorn
+requests
+python-telegram-bot
 pandas
 pandas-ta
-requests==2.32.3
-Flask==3.1.2
 numpy
 yfinance
 twelvedata
 alpha_vantage
+flask
