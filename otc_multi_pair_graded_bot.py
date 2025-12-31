@@ -1,103 +1,149 @@
-import os
-import time
-import threading
+import csv
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
-import pandas as pd
-import pandas_ta as ta
-import yfinance as yf
-from flask import Flask
+# ================== CONFIG ==================
+PAIR = "EURUSD"
+RSI_UPPER = 85
+RSI_LOWER = 15
+CONSOLIDATION_THRESHOLD = 0.0005
 
-# --- CONFIG ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-SYMBOL = "EURUSD=X"
-START_HOUR, END_HOUR = 9, 21
-MIN_ATR = 0.00008  
-COOLDOWN_MIN = 5
+BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
+# ============================================
 
-app = Flask(__name__)
 
-# --- STABLE SEND ENGINE ---
-def send_telegram_msg(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code != 200:
-            print(f"Telegram Error: {response.text}")
-    except Exception as e:
-        print(f"Request failed: {e}")
+# ================== TELEGRAM =================
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message
+    }
+    requests.post(url, data=payload)
+# ============================================
 
-# --- ANALYSIS ENGINE ---
-def analyze(df):
-    if df is None or len(df) < 30: return None
-    df.columns = [str(col).lower() for col in df.columns]
-    
-    # 1. Volatility Filter
-    df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=14)
-    if df["atr"] is None or df["atr"].iloc[-1] < MIN_ATR: return None
 
-    # 2. Indicators
-    df["rsi"] = ta.rsi(df["close"], length=7)
-    
-    macd_df = ta.macd(df["close"], fast=5, slow=13, signal=8)
-    if macd_df is not None:
-        df["macd_line"] = macd_df.iloc[:, 0]
-        df["macd_signal"] = macd_df.iloc[:, 2]
-    
-    stoch_df = ta.stoch(df["high"], df["low"], df["close"], k=5, d=3, smooth_k=3)
-    if stoch_df is not None:
-        df["st_k"] = stoch_df.iloc[:, 0]
-        df["st_d"] = stoch_df.iloc[:, 1]
+# ================== RSI ======================
+def calculate_rsi(closes, period=14):
+    gains, losses = [], []
 
-    # 3. Signal Logic
-    latest, prev = df.iloc[-1], df.iloc[-2]
-    
-    buy = (latest["rsi"] > 50 and 
-           latest["macd_line"] > latest["macd_signal"] and 
-           latest["st_k"] > latest["st_d"] and prev["st_k"] <= prev["st_d"])
-           
-    sell = (latest["rsi"] < 50 and 
-            latest["macd_line"] < latest["macd_signal"] and 
-            latest["st_k"] < latest["st_d"] and prev["st_k"] >= prev["st_d"])
+    for i in range(1, len(closes)):
+        change = closes[i] - closes[i - 1]
+        if change > 0:
+            gains.append(change)
+        else:
+            losses.append(abs(change))
 
-    if buy: return "BUY (CALL) 🟢"
-    if sell: return "SELL (PUT) 🔴"
+    if len(gains) < period:
+        return 50  # neutral
+
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period if losses else 1
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+# ============================================
+
+
+# ============ CONSOLIDATION ==================
+def is_consolidating(highs, lows, lookback=10):
+    recent_high = max(highs[-lookback:])
+    recent_low = min(lows[-lookback:])
+    return (recent_high - recent_low) < CONSOLIDATION_THRESHOLD
+# ============================================
+
+
+# ============== PAYOUT =======================
+def get_otc_payout(pair):
+    with open("payouts.csv") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            if row["pair"] == pair and row["market"] == "OTC":
+                return int(row["payout"])
     return None
+# ============================================
 
-# --- MAIN LOOP ---
+
+# ================== MAIN =====================
 def run_bot():
-    last_signal_time = datetime.now(timezone.utc) - timedelta(minutes=COOLDOWN_MIN)
-    send_telegram_msg(f"🚀 *EUR/USD Bot Started*")
-    
-    while True:
-        try:
-            now = datetime.now(timezone.utc)
-            if START_HOUR <= now.hour < END_HOUR and now > last_signal_time + timedelta(minutes=COOLDOWN_MIN):
-                # Download only EURUSD
-                df = yf.download(SYMBOL, period="1d", interval="1m", progress=False)
-                
-                if not df.empty:
-                    sig = analyze(df)
-                    if sig:
-                        current_price = round(df["Close"].iloc[-1], 5)
-                        msg = (f"🎯 *SIGNAL*: {SYMBOL}\n"
-                               f"*Action*: {sig}\n"
-                               f"*Price*: {current_price}")
-                        
-                        send_telegram_msg(msg)
-                        last_signal_time = now
-            
-            time.sleep(60) # Check every minute
-        except Exception as e:
-            print(f"Error: {e}")
-            time.sleep(10)
 
-@app.route('/')
-def home(): return "EURUSD Bot Active"
+    # ---- OTC WEEKEND GUARD ----
+    weekday = datetime.now().weekday()  # 0=Mon ... 6=Sun
+    if weekday < 5:
+        print("Weekday detected — OTC disabled")
+        return
 
+    # ---- LOAD CANDLES ----
+    closes, highs, lows = [], [], []
+
+    with open("candles.csv") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            closes.append(float(row["close"]))
+            highs.append(float(row["high"]))
+            lows.append(float(row["low"]))
+
+    if len(closes) < 15:
+        print("Not enough candle data")
+        return
+
+    # ---- INDICATORS ----
+    rsi = calculate_rsi(closes)
+    consolidating = is_consolidating(highs, lows)
+
+    # ---- PAYOUT RULE ----
+    payout = get_otc_payout(PAIR)
+    if payout is None:
+        print("No OTC payout found")
+        return
+
+    if payout < 90 or payout > 92:
+        print("OTC payout not in range")
+        return
+
+    if not consolidating:
+        print("Market is trending — no trade")
+        return
+
+    # ---- SIGNAL RULE ----
+    signal = None
+    if rsi <= RSI_LOWER:
+        signal = "BUY"
+    elif rsi >= RSI_UPPER:
+        signal = "SELL"
+
+    if signal is None:
+        print("RSI not in signal zone")
+        return
+
+    # ---- TELEGRAM ALERT ----
+    message = f"""
+📊 PO OTC SIGNAL
+Pair: {PAIR} (OTC)
+Signal: {signal}
+RSI: {round(rsi, 2)}
+Payout: {payout}%
+Market: Consolidation
+Time: {datetime.now()}
+"""
+    send_telegram(message)
+
+    # ---- LOG SIGNAL ----
+    with open("signals.csv", "a", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow([
+            datetime.now(),
+            PAIR,
+            "OTC",
+            signal,
+            round(rsi, 2),
+            payout
+        ])
+
+    print("Signal sent successfully")
+
+
+# ============== RUN ==========================
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    run_bot()
