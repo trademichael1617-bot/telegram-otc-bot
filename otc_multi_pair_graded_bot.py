@@ -146,10 +146,14 @@ loss_count = 0
 
 def signal_loop():
     global cooldown_until, open_trade, loss_count, loss_pause_until
+    
+    # Send confirmation message on startup
+    send("🚀 *Bot successfully connected to Render!*\nMonitoring: `EUR/USD` 📈")
+    
     while True:
         try:
             now = utc_now()
-            
+            # ... rest of your code ...
             # Check for Trading Window (10 AM - 9 PM)
             if not in_trading_window():
                 # If outside window, wait longer before checking again
