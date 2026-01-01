@@ -1,149 +1,118 @@
-import csv
-import requests
-from datetime import datetime
+import pandas as pd
+import numpy as np
 
-# ================== CONFIG ==================
-PAIR = "EURUSD"
-RSI_UPPER = 85
-RSI_LOWER = 15
-CONSOLIDATION_THRESHOLD = 0.0005
+# =========================
+# SETTINGS (DO NOT CHANGE)
+# =========================
+SYMBOL = "EURUSD"
+TIMEFRAME = "1m"
 
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
-# ============================================
+RSI_PERIOD = 7
+RSI_OVERBOUGHT = 90
+RSI_OVERSOLD = 10
 
+BB_PERIOD = 25
+BB_DEV = 2
 
-# ================== TELEGRAM =================
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message
-    }
-    requests.post(url, data=payload)
-# ============================================
+CONSOLIDATION_LOOKBACK = 20
+BB_WIDTH_THRESHOLD = 0.015  # controls consolidation sensitivity
 
 
-# ================== RSI ======================
-def calculate_rsi(closes, period=14):
-    gains, losses = [], []
+# =========================
+# INDICATOR FUNCTIONS
+# =========================
+def rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    for i in range(1, len(closes)):
-        change = closes[i] - closes[i - 1]
-        if change > 0:
-            gains.append(change)
-        else:
-            losses.append(abs(change))
-
-    if len(gains) < period:
-        return 50  # neutral
-
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period if losses else 1
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
 
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
-# ============================================
 
 
-# ============ CONSOLIDATION ==================
-def is_consolidating(highs, lows, lookback=10):
-    recent_high = max(highs[-lookback:])
-    recent_low = min(lows[-lookback:])
-    return (recent_high - recent_low) < CONSOLIDATION_THRESHOLD
-# ============================================
+def bollinger_bands(series, period, dev):
+    sma = series.rolling(period).mean()
+    std = series.rolling(period).std()
+    upper = sma + (std * dev)
+    lower = sma - (std * dev)
+    return upper, lower, sma
 
 
-# ============== PAYOUT =======================
-def get_otc_payout(pair):
-    with open("payouts.csv") as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            if row["pair"] == pair and row["market"] == "OTC":
-                return int(row["payout"])
-    return None
-# ============================================
+def is_consolidating(close, upper_bb, lower_bb):
+    """
+    Returns True ONLY when market is ranging
+    """
+    bb_width = (upper_bb - lower_bb) / close
+    recent_range = (
+        close.rolling(CONSOLIDATION_LOOKBACK).max()
+        - close.rolling(CONSOLIDATION_LOOKBACK).min()
+    ) / close
+
+    return (bb_width < BB_WIDTH_THRESHOLD) & (recent_range < BB_WIDTH_THRESHOLD)
 
 
-# ================== MAIN =====================
-def run_bot():
+# =========================
+# STRATEGY LOGIC
+# =========================
+def analyze_market(df):
+    """
+    df MUST contain only EURUSD 1m CLOSE prices
+    """
 
-    # ---- OTC WEEKEND GUARD ----
-    weekday = datetime.now().weekday()  # 0=Mon ... 6=Sun
-    if weekday < 5:
-        print("Weekday detected — OTC disabled")
-        return
+    df = df.copy()
 
-    # ---- LOAD CANDLES ----
-    closes, highs, lows = [], [], []
+    # LINE CHART LOGIC → CLOSE PRICE ONLY
+    df["rsi"] = rsi(df["close"], RSI_PERIOD)
+    df["upper_bb"], df["lower_bb"], df["mid_bb"] = bollinger_bands(
+        df["close"], BB_PERIOD, BB_DEV
+    )
 
-    with open("candles.csv") as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            closes.append(float(row["close"]))
-            highs.append(float(row["high"]))
-            lows.append(float(row["low"]))
+    df["consolidating"] = is_consolidating(
+        df["close"], df["upper_bb"], df["lower_bb"]
+    )
 
-    if len(closes) < 15:
-        print("Not enough candle data")
-        return
+    df["signal"] = "NONE"
 
-    # ---- INDICATORS ----
-    rsi = calculate_rsi(closes)
-    consolidating = is_consolidating(highs, lows)
+    # BUY SIGNAL
+    buy_condition = (
+        (df["rsi"] <= RSI_OVERSOLD)
+        & (df["close"] <= df["lower_bb"])
+        & (df["consolidating"])
+    )
 
-    # ---- PAYOUT RULE ----
-    payout = get_otc_payout(PAIR)
-    if payout is None:
-        print("No OTC payout found")
-        return
+    # SELL SIGNAL
+    sell_condition = (
+        (df["rsi"] >= RSI_OVERBOUGHT)
+        & (df["close"] >= df["upper_bb"])
+        & (df["consolidating"])
+    )
 
-    if payout < 90 or payout > 92:
-        print("OTC payout not in range")
-        return
+    df.loc[buy_condition, "signal"] = "CALL"
+    df.loc[sell_condition, "signal"] = "PUT"
 
-    if not consolidating:
-        print("Market is trending — no trade")
-        return
-
-    # ---- SIGNAL RULE ----
-    signal = None
-    if rsi <= RSI_LOWER:
-        signal = "BUY"
-    elif rsi >= RSI_UPPER:
-        signal = "SELL"
-
-    if signal is None:
-        print("RSI not in signal zone")
-        return
-
-    # ---- TELEGRAM ALERT ----
-    message = f"""
-📊 PO OTC SIGNAL
-Pair: {PAIR} (OTC)
-Signal: {signal}
-RSI: {round(rsi, 2)}
-Payout: {payout}%
-Market: Consolidation
-Time: {datetime.now()}
-"""
-    send_telegram(message)
-
-    # ---- LOG SIGNAL ----
-    with open("signals.csv", "a", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow([
-            datetime.now(),
-            PAIR,
-            "OTC",
-            signal,
-            round(rsi, 2),
-            payout
-        ])
-
-    print("Signal sent successfully")
+    return df
 
 
-# ============== RUN ==========================
+# =========================
+# EXAMPLE USAGE
+# =========================
 if __name__ == "__main__":
-    run_bot()
+    # Example dataframe (replace with live price feed)
+    # Data MUST be 1-minute EURUSD closes
+    data = {
+        "close": np.random.random(200) * 0.002 + 1.0800
+    }
+
+    df = pd.DataFrame(data)
+
+    result = analyze_market(df)
+
+    latest = result.iloc[-1]
+
+    if latest["signal"] != "NONE":
+        print(f"📢 {SYMBOL} SIGNAL → {latest['signal']}")
+    else:
+        print("⏸ No trade (Market not consolidating)")
